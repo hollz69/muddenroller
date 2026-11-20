@@ -143,7 +143,7 @@ jobs:
           if ($vcrt) { Copy-Item $vcrt.FullName $out }
           $env:QT_QPA_PLATFORM = 'windows'
           $env:GOTHEX_ACCEPTANCE_FIXTURE = '1'
-          foreach ($test in @('--self-test-qwdtt-import --tun-defaults-only','--self-test-prepared-import')) {
+          foreach ($test in @('--self-test-qwdtt-import --tun-defaults-only','--self-test-core-startup')) {
             $p = Start-Process -FilePath "$out\Gothex.exe" -WorkingDirectory $env:RUNNER_TEMP -ArgumentList $test -PassThru
             if (!$p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; throw "Timed out $test" }
             if ($p.ExitCode -ne 0) { throw "Packaged application failed $test (exit $($p.ExitCode))" }
