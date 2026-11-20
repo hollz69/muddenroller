@@ -14,7 +14,33 @@ on:
 permissions:
   contents: read
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      SOURCE_SHA256: ${{ inputs.source_sha256 }}
+    steps:
+      - name: Copy the draft's client source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ $RELEASE_TAG =~ ^v[0-9][0-9A-Za-z.+-]{1,79}$ && $VERSION_CODE =~ ^110[0-9]{3}$ && $SOURCE_SHA256 =~ ^[a-f0-9]{64}$ ]]
+          archive="client-source-build$((10#${VERSION_CODE} % 1000)).tar.gz"
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" -p "$archive"
+          printf '%s  %s\n' "$SOURCE_SHA256" "$archive" | sha256sum --check
+      - uses: actions/upload-artifact@v6
+        with:
+          name: verified-client-source
+          path: client-source-build*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
   windows:
+    needs: source
     runs-on: windows-2025
     timeout-minutes: 40
     defaults:
@@ -25,17 +51,13 @@ jobs:
       VERSION_CODE: ${{ inputs.version_code }}
       SOURCE_SHA256: ${{ inputs.source_sha256 }}
     steps:
-      - name: Retrieve verified client source
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: verified-client-source
+      - name: Extract verified client source
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v[0-9][0-9A-Za-z.+-]{1,79}$' -or
-              $env:VERSION_CODE -notmatch '^110[0-9]{3}$' -or
-              $env:SOURCE_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid release inputs' }
           $build = [int]$env:VERSION_CODE % 1000
           $archive = "client-source-build$build.tar.gz"
-          gh release download $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY -p $archive
-          if ($LASTEXITCODE -ne 0) { throw 'Client source asset unavailable' }
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $env:SOURCE_SHA256) { throw 'Source archive digest mismatch' }
           tar -xzf $archive
           if ($LASTEXITCODE -ne 0) { throw 'Cannot extract client source archive' }
