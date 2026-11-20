@@ -1,0 +1,138 @@
+name: gothex Windows x64
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag with the client source archive
+        required: true
+      version_code:
+        description: Installed build code
+        required: true
+      source_sha256:
+        description: SHA-256 of the client source archive
+        required: true
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      SOURCE_SHA256: ${{ inputs.source_sha256 }}
+    steps:
+      - name: Retrieve verified client source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9][0-9A-Za-z.+-]{1,79}$' -or
+              $env:VERSION_CODE -notmatch '^110[0-9]{3}$' -or
+              $env:SOURCE_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid release inputs' }
+          $build = [int]$env:VERSION_CODE % 1000
+          $archive = "client-source-build$build.tar.gz"
+          gh release download $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY -p $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Client source asset unavailable' }
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $env:SOURCE_SHA256) { throw 'Source archive digest mismatch' }
+          tar -xzf $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract client source archive' }
+          "CLIENT_ROOT=$pwd\client-source-build$build" >> $env:GITHUB_ENV
+      - name: Obtain Qt and OpenSSL
+        run: |
+          function Expand-Verified($uri, $file, $sha) {
+            curl.exe --fail --location --retry 3 --output $file $uri
+            if ($LASTEXITCODE -ne 0 -or (Get-FileHash $file -Algorithm SHA256).Hash -ne $sha) {
+              throw "Cannot retrieve verified dependency $file"
+            }
+            7z x -y $file | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Cannot extract $file" }
+          }
+          Expand-Verified 'https://github.com/throneproj/buildqt/releases/download/Qt_6.12.0/Qt_6.12.0_x64.7z' 'qt.7z' '2233c6f40adf952bd0d1dbd36ce5c9a0ea674a0689eebdcc8d11847e0cf4f387'
+          Expand-Verified 'https://github.com/throneproj/env_windows_legacy/releases/download/latest/openssl_x64.7z' 'openssl.7z' '0cc10ca8bd88a08f1f4275edf8c3f285c5988803e693d4dc8a12a85a9e544412'
+          "$pwd\Qt\bin" >> $env:GITHUB_PATH
+          "QT_HOME=$pwd\Qt" >> $env:GITHUB_ENV
+          "OPENSSL_ROOT_DIR=$pwd\openssl" >> $env:GITHUB_ENV
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile gothex and run desktop tests
+        run: |
+          $src = "$env:CLIENT_ROOT\Rawline"
+          if (!(Test-Path "$src\srslist.h")) {
+            $ps = "$env:RUNNER_TEMP\srslist.h"
+            curl.exe --fail --location --retry 3 -o $ps 'https://raw.githubusercontent.com/throneproj/routeprofiles/rule-set/srslist.h'
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot retrieve rule-set list' }
+            Copy-Item $ps "$src\srslist.h"
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          cmake -S $src -B build -G Ninja "-DCMAKE_PREFIX_PATH=$env:QT_HOME" "-DOPENSSL_ROOT_DIR=$env:OPENSSL_ROOT_DIR" -DCMAKE_BUILD_TYPE=Release "-DINPUT_VERSION=$version" "-DGOTHEX_VERSION_CODE=$env:VERSION_CODE" -DGOTHEX_API_BASE_URL=https://client-api.gothex.xyz -DRAWLINE_REPOSITORY= -DGOTHEX_AUTH_TESTS=ON -DGOTHEX_DIAGNOSTICS_TESTS=ON -DGOTHEX_RECOMMENDATIONS_TESTS=ON -DGOTHEX_UPDATE_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+          cmake --build build --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Windows compilation failed' }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          ctest --test-dir build --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows CTest failed' }
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.0'
+          cache: false
+      - name: Build the locked network core and helpers
+        run: |
+          $env:CGO_ENABLED = '0'
+          $out = "$pwd\package\gothex"
+          New-Item $out -ItemType Directory -Force | Out-Null
+          $env:GOTOOLCHAIN = 'local'
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          Push-Location "$env:CLIENT_ROOT\cores\macos\core"
+          go build -mod=readonly -modfile=.rawline/go.mod -trimpath '-ldflags=-w -s -X github.com/sagernet/sing-box/constant.Version=1.15.0-alpha.13-throne.823b0a3f5374 -X RawlineCore/internal/parentcheck.GUIExecutable=Gothex -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0' '-tags=with_clash_api,with_quic,with_wireguard,with_utls,with_dhcp,with_tailscale,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0,with_purego,with_naive_outbound' -o "$out\RawlineCore.exe" .
+          if ($LASTEXITCODE -ne 0) { throw 'Windows core compilation failed' }
+          $cronet = 'github.com/sagernet/cronet-go/lib/windows_amd64'
+          go mod download -modfile=.rawline/go.mod $cronet
+          if ($LASTEXITCODE -ne 0) { throw 'Could not get matching Cronet DLL' }
+          $cronetDir = go list -modfile=.rawline/go.mod -m -f '{{.Dir}}' $cronet
+          Copy-Item "$cronetDir\libcronet.dll" $out
+          Pop-Location
+          foreach ($helper in @(@('updater','RawlineUpdater'),@('qwdtt','qwdtt'),@('sstp','sstp-client'))) {
+            Push-Location "$env:CLIENT_ROOT\Rawline\$($helper[0])"
+            go build -mod=readonly -trimpath '-ldflags=-s -w' -o "$out\$($helper[1]).exe" .
+            if ($LASTEXITCODE -ne 0) { throw "Failed to build $($helper[1])" }
+            Pop-Location
+          }
+      - name: Stage the portable package and smoke-test it
+        run: |
+          $out = "$pwd\package\gothex"
+          $src = "$env:CLIENT_ROOT\Rawline"
+          Copy-Item build\Gothex.exe $out
+          windeployqt --release --no-compiler-runtime --dir $out "$out\Gothex.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item "$src\LICENSE" "$out\LICENSE.txt"
+          Copy-Item "$src\res\font\FONTS-LICENSE.txt" $out
+          Copy-Item "$src\qwdtt\LICENSE" "$out\qwdtt-LICENSE.txt"
+          Copy-Item "$src\sstp\LICENSE" "$out\SSTP-LICENSE.txt"
+          Copy-Item "$env:CLIENT_ROOT\licenses" "$out\licenses" -Recurse
+          'Extract the full folder before running Gothex.exe. Requires Windows x64 and Microsoft Visual C++ Redistributable x64.' > "$out\README.txt"
+          $vcrt = Get-ChildItem "${Env:ProgramFiles}\Microsoft Visual Studio\2022", "${Env:ProgramFiles}\Microsoft Visual Studio\18", "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\2022" -Filter vc_redist.x64.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($vcrt) { Copy-Item $vcrt.FullName $out }
+          $env:QT_QPA_PLATFORM = 'windows'
+          $env:GOTHEX_ACCEPTANCE_FIXTURE = '1'
+          foreach ($test in @('--self-test-qwdtt-import --tun-defaults-only','--self-test-prepared-import')) {
+            $p = Start-Process -FilePath "$out\Gothex.exe" -WorkingDirectory $env:RUNNER_TEMP -ArgumentList $test -PassThru
+            if (!$p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; throw "Timed out $test" }
+            if ($p.ExitCode -ne 0) { throw "Packaged application failed $test (exit $($p.ExitCode))" }
+          }
+          7z a -tzip -mx=5 windows-x86_64.zip .\package\gothex | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Package compression failed' }
+          7z t windows-x86_64.zip | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Package integrity check failed' }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-x86_64
+          path: windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
