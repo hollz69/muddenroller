@@ -95,9 +95,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
           cmake --build build --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Windows compilation failed' }
-          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QPA_PLATFORM = 'windows'
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Windows CTest failed' }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-gothex-compiled
+          path: build/Gothex.exe
+          if-no-files-found: error
+          retention-days: 2
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -131,8 +137,12 @@ jobs:
           $out = "$pwd\package\gothex"
           $src = "$env:CLIENT_ROOT\Rawline"
           Copy-Item build\Gothex.exe $out
-          windeployqt --release --no-compiler-runtime --dir $out "$out\Gothex.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          $dependencies = dumpbin /dependents "$out\Gothex.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect Windows dependencies' }
+          if ($dependencies -match 'Qt6Core\.dll') {
+            windeployqt --release --no-compiler-runtime --dir $out "$out\Gothex.exe"
+            if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          }
           Copy-Item "$src\LICENSE" "$out\LICENSE.txt"
           Copy-Item "$src\res\font\FONTS-LICENSE.txt" $out
           Copy-Item "$src\qwdtt\LICENSE" "$out\qwdtt-LICENSE.txt"
