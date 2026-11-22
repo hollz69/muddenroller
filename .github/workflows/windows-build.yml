@@ -159,12 +159,12 @@ jobs:
           $env:GOOS = 'windows'
           $env:GOARCH = 'amd64'
           Push-Location "$env:CLIENT_ROOT\cores\macos\core"
-          go build -mod=readonly -modfile=.rawline/go.mod -trimpath '-ldflags=-w -s -X github.com/sagernet/sing-box/constant.Version=1.15.0-alpha.13-throne.823b0a3f5374 -X RawlineCore/internal/parentcheck.GUIExecutable=Gothex -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0' '-tags=with_clash_api,with_quic,with_wireguard,with_utls,with_dhcp,with_tailscale,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0,with_purego,with_naive_outbound' -o "$out\RawlineCore.exe" .
+          go build -mod=readonly '-modfile=.rawline/go.mod' -trimpath '-ldflags=-w -s -X github.com/sagernet/sing-box/constant.Version=1.15.0-alpha.13-throne.823b0a3f5374 -X RawlineCore/internal/parentcheck.GUIExecutable=Gothex -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0' '-tags=with_clash_api,with_quic,with_wireguard,with_utls,with_dhcp,with_tailscale,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0,with_purego,with_naive_outbound' -o "$out\RawlineCore.exe" .
           if ($LASTEXITCODE -ne 0) { throw 'Windows core compilation failed' }
           $cronet = 'github.com/sagernet/cronet-go/lib/windows_amd64'
-          go mod download -modfile=.rawline/go.mod $cronet
+          go mod download '-modfile=.rawline/go.mod' $cronet
           if ($LASTEXITCODE -ne 0) { throw 'Could not get matching Cronet DLL' }
-          $cronetDir = go list -modfile=.rawline/go.mod -m -f '{{.Dir}}' $cronet
+          $cronetDir = go list '-modfile=.rawline/go.mod' -m -f '{{.Dir}}' $cronet
           Copy-Item "$cronetDir\libcronet.dll" $out
           Pop-Location
           foreach ($helper in @(@('updater','RawlineUpdater'),@('qwdtt','qwdtt'),@('sstp','sstp-client'))) {
