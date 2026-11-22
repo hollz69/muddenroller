@@ -11,7 +11,12 @@ on:
       source_sha256:
         description: SHA-256 of the client source archive
         required: true
+      reuse_run:
+        description: Optional run ID with an already compiled Gothex.exe for identical client sources
+        required: false
+        default: ''
 permissions:
+  actions: read
   contents: read
 jobs:
   source:
@@ -50,6 +55,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       VERSION_CODE: ${{ inputs.version_code }}
       SOURCE_SHA256: ${{ inputs.source_sha256 }}
+      REUSE_RUN: ${{ inputs.reuse_run }}
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -81,6 +87,13 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - uses: actions/download-artifact@v7
+        if: inputs.reuse_run != ''
+        with:
+          name: windows-gothex-compiled
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+          path: reused
       - name: Compile gothex
         run: |
           $src = "$env:CLIENT_ROOT\Rawline"
@@ -93,8 +106,14 @@ jobs:
           $version = $env:RELEASE_TAG.Substring(1)
           cmake -S $src -B build -G Ninja "-DCMAKE_PREFIX_PATH=$env:QT_HOME" "-DOPENSSL_ROOT_DIR=$env:OPENSSL_ROOT_DIR" -DCMAKE_BUILD_TYPE=Release "-DINPUT_VERSION=$version" "-DGOTHEX_VERSION_CODE=$env:VERSION_CODE" -DGOTHEX_API_BASE_URL=https://client-api.gothex.xyz -DRAWLINE_REPOSITORY= -DGOTHEX_AUTH_TESTS=ON -DGOTHEX_DIAGNOSTICS_TESTS=ON -DGOTHEX_RECOMMENDATIONS_TESTS=ON -DGOTHEX_UPDATE_TESTS=ON
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
-          cmake --build build --parallel 4
-          if ($LASTEXITCODE -ne 0) { throw 'Windows compilation failed' }
+          if ($env:REUSE_RUN) {
+            cmake --build build --parallel 4 --target gothex_auth_test gothex_signin_page_test gothex_diagnostics_test gothex_recommendations_test gothex_updates_test
+            if ($LASTEXITCODE -ne 0) { throw 'Windows test compilation failed' }
+            Copy-Item reused/Gothex.exe build/Gothex.exe
+          } else {
+            cmake --build build --parallel 4
+            if ($LASTEXITCODE -ne 0) { throw 'Windows compilation failed' }
+          }
       - uses: actions/upload-artifact@v6
         with:
           name: windows-gothex-compiled
@@ -102,10 +121,24 @@ jobs:
           if-no-files-found: error
           retention-days: 2
       - name: Run desktop tests
+        id: desktop-tests
+        continue-on-error: true
         run: |
           $env:QT_QPA_PLATFORM = 'windows'
-          ctest --test-dir build --timeout 60 --verbose
-          if ($LASTEXITCODE -ne 0) { throw 'Windows CTest failed' }
+          $failures = @()
+          foreach ($name in @('auth', 'signin_page', 'diagnostics', 'recommendations', 'updates')) {
+            $log = Join-Path $env:RUNNER_TEMP "gothex-$name.txt"
+            $test = Join-Path $pwd "build/gothex_${name}_test.exe"
+            $process = Start-Process -FilePath $test -ArgumentList "-o `"$log,txt`"" -PassThru
+            if (!$process.WaitForExit(60000)) {
+              Stop-Process -Id $process.Id -Force
+              $failures += "$name (timeout)"
+            } elseif ($process.ExitCode -ne 0) {
+              $failures += "$name (exit $($process.ExitCode))"
+            }
+            if (Test-Path $log) { Get-Content $log }
+          }
+          if ($failures.Count) { throw "Windows tests failed: $($failures -join ', ')" }
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -170,3 +203,6 @@ jobs:
           path: windows-x86_64.zip
           if-no-files-found: error
           retention-days: 7
+      - name: Require all desktop tests before release
+        if: steps.desktop-tests.outcome != 'success'
+        run: throw 'Windows desktop tests must pass before distribution'
