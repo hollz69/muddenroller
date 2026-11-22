@@ -81,7 +81,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Compile gothex and run desktop tests
+      - name: Compile gothex
         run: |
           $src = "$env:CLIENT_ROOT\Rawline"
           if (!(Test-Path "$src\srslist.h")) {
@@ -95,15 +95,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
           cmake --build build --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Windows compilation failed' }
-          $env:QT_QPA_PLATFORM = 'windows'
-          ctest --test-dir build --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'Windows CTest failed' }
       - uses: actions/upload-artifact@v6
         with:
           name: windows-gothex-compiled
           path: build/Gothex.exe
           if-no-files-found: error
           retention-days: 2
+      - name: Run desktop tests
+        run: |
+          $env:QT_QPA_PLATFORM = 'windows'
+          ctest --test-dir build --timeout 60 --verbose
+          if ($LASTEXITCODE -ne 0) { throw 'Windows CTest failed' }
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
