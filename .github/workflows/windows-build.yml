@@ -15,6 +15,10 @@ on:
         description: Optional run ID with an already compiled Gothex.exe for identical client sources
         required: false
         default: ''
+      verify_only:
+        description: Repeat the platform tests without rebuilding the candidate package
+        type: boolean
+        default: false
 permissions:
   actions: read
   contents: read
@@ -140,11 +144,13 @@ jobs:
           }
           if ($failures.Count) { throw "Windows tests failed: $($failures -join ', ')" }
       - name: Set up Go
+        if: ${{ !inputs.verify_only }}
         uses: actions/setup-go@v6
         with:
           go-version: '1.27.0'
           cache: false
       - name: Build the locked network core and helpers
+        if: ${{ !inputs.verify_only }}
         run: |
           $env:CGO_ENABLED = '0'
           $out = "$pwd\package\gothex"
@@ -168,6 +174,7 @@ jobs:
             Pop-Location
           }
       - name: Stage the portable package and smoke-test it
+        if: ${{ !inputs.verify_only }}
         run: |
           $out = "$pwd\package\gothex"
           $src = "$env:CLIENT_ROOT\Rawline"
@@ -198,6 +205,7 @@ jobs:
           7z t windows-x86_64.zip | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Package integrity check failed' }
       - uses: actions/upload-artifact@v6
+        if: ${{ !inputs.verify_only }}
         with:
           name: windows-x86_64
           path: windows-x86_64.zip
